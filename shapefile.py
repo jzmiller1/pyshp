@@ -90,22 +90,23 @@ def signed_area(coords):
     ys.append(ys[1])
     return sum(xs[i]*(ys[i+1]-ys[i-1]) for i in range(1, len(coords)))/2.0
 
-class _Shape:
-    def __init__(self, shapeType=None):
-        """Stores the geometry of the different shape types
-        specified in the Shapefile spec. Shape types are
-        usually point, polyline, or polygons. Every shape type
-        except the "Null" type contains points at some level for
-        example verticies in a polygon. If a shape type has
-        multiple shapes containing points within a single
-        geometry record then those shapes are called parts. Parts
-        are designated by their starting index in geometry record's
-        list of shapes."""
-        self.shapeType = shapeType
-        self.points = []
 
-    @property
-    def __geo_interface__(self):
+class GeoInterfaceMixin():
+    """Implementation of __geo_interface__
+
+    https://gist.github.com/sgillies/2217756
+
+    """
+    def __get_geo_interface_geodata__(self):
+        """returns type and coordinates for __geo_interface__
+
+        """
+        if hasattr(self, 'shape'):
+            self.shapeType = self.shape.shapeType
+            self.points = self.shape.points
+            if self.shapeType not in [POINT, POINTM, POINTZ]:
+                self.parts = self.shape.parts
+
         if self.shapeType in [POINT, POINTM, POINTZ]:
             return {
             'type': 'Point',
@@ -176,11 +177,48 @@ class _Shape:
                     'coordinates': polys
                     }
 
-class _ShapeRecord:
+    def __get_geo_interface_bbox__(self):
+        if hasattr(self, 'shape'):
+            self.bbox = self.shape.bbox
+        return {'bbox': tuple(self.bbox)}
+
+    def __get_geo_interface_properties__(self):
+        return {'properties': dict((field[0], record) for (field, record) in zip(self.fields[1:], self.record))}
+
+    @property
+    def __geo_interface__(self):
+        geojson = {}
+        geojson.update(self.__get_geo_interface_geodata__())
+        if geojson['type'] is not 'Point':
+            geojson.update(self.__get_geo_interface_bbox__())
+        if not isinstance(self, _Shape):
+            geojson.update(self.__get_geo_interface_properties__())
+        return geojson
+
+
+
+class _Shape(GeoInterfaceMixin):
+    def __init__(self, shapeType=None):
+        """Stores the geometry of the different shape types
+        specified in the Shapefile spec. Shape types are
+        usually point, polyline, or polygons. Every shape type
+        except the "Null" type contains points at some level for
+        example verticies in a polygon. If a shape type has
+        multiple shapes containing points within a single
+        geometry record then those shapes are called parts. Parts
+        are designated by their starting index in geometry record's
+        list of shapes."""
+        self.shapeType = shapeType
+        self.points = []
+
+
+class _ShapeRecord(GeoInterfaceMixin):
     """A shape object of any type."""
-    def __init__(self, shape=None, record=None):
+    def __init__(self, shape=None, record=None, fields=None):
         self.shape = shape
         self.record = record
+        self.fields = fields
+
 
 class ShapefileException(Exception):
     """An exception to handle shapefile specific problems."""
@@ -543,13 +581,15 @@ class Reader:
         """Returns a combination geometry and attribute record for the
         supplied record index."""
         i = self.__restrictIndex(i)
-        return _ShapeRecord(shape=self.shape(i), record=self.record(i))
+        return _ShapeRecord(shape=self.shape(i),
+                            record=self.record(i),
+                            fields=self.fields)
 
     def shapeRecords(self):
         """Returns a list of combination geometry/attribute records for
         all records in a shapefile."""
         shapeRecords = []
-        return [_ShapeRecord(shape=rec[0], record=rec[1]) \
+        return [_ShapeRecord(shape=rec[0], record=rec[1], fields=self.fields) \
                                 for rec in zip(self.shapes(), self.records())]
 
 class Writer:
