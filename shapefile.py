@@ -107,7 +107,20 @@ class GeoInterfaceMixin():
             if self.shapeType not in [POINT, POINTM, POINTZ]:
                 self.parts = self.shape.parts
 
-        if self.shapeType in [POINT, POINTM, POINTZ]:
+        if self.shapeType == 'FeatureCollection':
+            features = [feature.__geo_interface__ for feature in self]
+            features = [{'type': 'Feature',
+                         'geometry': {'type': feature.__geo_interface__['type'],
+                                      'coordinates': feature.__geo_interface__['coordinates'],
+                                      'bbox': feature.__geo_interface__.get('bbox', 'null')},
+                         'properties': feature.__geo_interface__['properties']
+                         }
+                        for feature in self]
+            return {
+            'type': 'FeatureCollection',
+            'features': features,
+            }
+        elif self.shapeType in [POINT, POINTM, POINTZ]:
             return {
             'type': 'Point',
             'coordinates': tuple(self.points[0])
@@ -180,6 +193,24 @@ class GeoInterfaceMixin():
     def __get_geo_interface_bbox__(self):
         if hasattr(self, 'shape'):
             self.bbox = self.shape.bbox
+        elif self.geojson['type'] == 'FeatureCollection':
+            bbox_coordinates = [feature['geometry']['coordinates'] for feature
+                                in self.geojson['features'] if feature['type'] != 'Point']
+            lats = []
+            longs = []
+            if self.geojson['features'][0]['geometry']['type'] != 'Point':
+                for x in bbox_coordinates:
+                    for y in x:
+                        for z in y:
+                            longs.append(z[0])
+                            lats.append(z[1])
+            else:
+                for long, lat in bbox_coordinates:
+                    longs.append(long)
+                    lats.append(lat)
+            lats.sort()
+            longs.sort()
+            self.bbox = [longs[0], lats[1], longs[-1], lats[-1]]
         return {'bbox': tuple(self.bbox)}
 
     def __get_geo_interface_properties__(self):
@@ -187,13 +218,13 @@ class GeoInterfaceMixin():
 
     @property
     def __geo_interface__(self):
-        geojson = {}
-        geojson.update(self.__get_geo_interface_geodata__())
-        if geojson['type'] is not 'Point':
-            geojson.update(self.__get_geo_interface_bbox__())
-        if not isinstance(self, _Shape):
-            geojson.update(self.__get_geo_interface_properties__())
-        return geojson
+        self.geojson = {}
+        self.geojson.update(self.__get_geo_interface_geodata__())
+        if self.geojson['type'] is not 'Point':
+            self.geojson.update(self.__get_geo_interface_bbox__())
+        if not isinstance(self, _Shape) and not isinstance(self, _ShapeRecords):
+            self.geojson.update(self.__get_geo_interface_properties__())
+        return self.geojson
 
 
 
@@ -219,6 +250,11 @@ class _ShapeRecord(GeoInterfaceMixin):
         self.record = record
         self.fields = fields
 
+
+class _ShapeRecords(GeoInterfaceMixin, list):
+    """Adds GeoInterfaceMixin to list to allow __geo_interface__ calls on results of shaperecords"""
+    def __init__(self):
+        self.shapeType = 'FeatureCollection'
 
 class ShapefileException(Exception):
     """An exception to handle shapefile specific problems."""
@@ -588,9 +624,10 @@ class Reader:
     def shapeRecords(self):
         """Returns a list of combination geometry/attribute records for
         all records in a shapefile."""
-        shapeRecords = []
-        return [_ShapeRecord(shape=rec[0], record=rec[1], fields=self.fields) \
-                                for rec in zip(self.shapes(), self.records())]
+        shapeRecordsResults = _ShapeRecords()
+        data = [_ShapeRecord(shape=rec[0], record=rec[1], fields=self.fields) for rec in zip(self.shapes(), self.records())]
+        shapeRecordsResults.extend(data)
+        return shapeRecordsResults
 
 class Writer:
     """Provides write support for ESRI Shapefiles."""
